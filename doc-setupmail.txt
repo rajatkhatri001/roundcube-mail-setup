@@ -1,0 +1,77 @@
+Here's the full setup — local Dovecot mirror + periodic sync from Hostinger + Roundcube pointed at the local server for reading.
+Architecture
+Hostinger IMAP  <--[imapsync, every N minutes]--  Local Dovecot  <--[fast local IMAP]--  Roundcube
+                                                                                              |
+                                                                                    SMTP still → Hostinger directly (for sending)
+Step 1 — Add Dovecot to your docker-compose.yml
+yaml  dovecot:
+    image: dovecot/dovecot:latest
+    container_name: local-dovecot
+    restart: always
+    volumes:
+      - ./dovecot/conf:/etc/dovecot
+      - ./dovecot/mail:/var/mail
+    ports:
+      - "1430:143"
+      - "9930:993"
+Step 2 — Create Dovecot config
+bashmkdir -p ~/roundcube-docker/dovecot/conf ~/roundcube-docker/dovecot/mail
+bashcat > ~/roundcube-docker/dovecot/conf/dovecot.conf << 'EOF'
+mail_location = maildir:/var/mail/%u
+mail_privileged_group = mail
+
+protocols = imap
+
+passdb {
+  driver = passwd-file
+  args = scheme=PLAIN /etc/dovecot/users
+}
+userdb {
+  driver = passwd-file
+  args = /etc/dovecot/users
+}
+
+service imap-login {
+  inet_listener imap {
+    port = 143
+  }
+  inet_listener imaps {
+    port = 993
+  }
+}
+
+ssl = no
+EOF
+Create local login credentials for Roundcube to use against this mirror:
+bashcat > ~/roundcube-docker/dovecot/conf/users << 'EOF'
+shagun.verma@asituj.com:{PLAIN}your-local-password:5000:5000::/var/mail/shagun.verma@asituj.com
+rajat@asituj.com:{PLAIN}your-local-password:5000:5000::/var/mail/rajat@asituj.com
+EOF
+Replace your-local-password with something you choose — this is only used locally between Roundcube and Dovecot, not your real Hostinger password.
+Step 3 — Install imapsync to pull mail from Hostinger
+bashdocker exec -it roundcube-mailproxy sh -c "echo test"  # confirm proxy container name
+sudo dnf install -y perl perl-CPAN
+sudo dnf install -y https://imapsync.lamiral.info/dist/imapsync-latest.tar.gz 2>/dev/null || \
+  (cd /tmp && curl -LO https://imapsync.lamiral.info/dist/imapsync-latest.tar.gz && tar xzf imapsync-latest.tar.gz)
+(If that install path doesn't work, install via your distro's method for imapsync — it's a widely packaged Perl tool.)
+Step 4 — Run the first full sync manually (test it)
+bashimapsync \
+  --host1 imap.hostinger.com --user1 shagun.verma@asituj.com --password1 'HOSTINGER_PASSWORD' --ssl1 \
+  --host2 localhost --port2 1430 --user2 shagun.verma@asituj.com --password2 'your-local-password' \
+  --justfolders --dry
+Remove --dry once the test output looks correct, to actually run the sync.
+Step 5 — Automate periodic sync (cron)
+bashcrontab -e
+Add (every 5 minutes):
+*/5 * * * * /usr/bin/imapsync --host1 imap.hostinger.com --user1 shagun.verma@asituj.com --password1 'HOSTINGER_PASSWORD' --ssl1 --host2 localhost --port2 1430 --user2 shagun.verma@asituj.com --password2 'your-local-password' >> /home/server/imapsync.log 2>&1
+Repeat one line per mailbox you want mirrored.
+Step 6 — Point Roundcube's default identity at the local Dovecot for reading
+yaml      - ROUNDCUBEMAIL_DEFAULT_HOST=tls://dovecot:143
+      - ROUNDCUBEMAIL_DEFAULT_PORT=143
+Keep SMTP pointed at Hostinger (unchanged) — sending still needs to go out through Hostinger.
+Step 7 — Recreate and test
+bashdocker compose up -d
+docker logs local-dovecot --tail 30
+Log in to Roundcube using the local password you set in step 2, and confirm mail appears (after the first sync completes).
+Important limitation to know upfront
+This is one-way, pull-only sync as set up above: new mail from Hostinger flows in, but actions in Roundcube (delete, mark read, move) won't push back to Hostinger unless you add --delete2duplicates and bidirectional flags to imapsync, which adds real risk of accidental data loss if misconfigured. Start read-only/mirror-only until you're confident it's syncing correctly, then decide if you want two-way sync later.
