@@ -1,8 +1,8 @@
 <?php
   $config['db_dsnw'] = 'mysql://roundcube:123@roundcubemail-mysql:3306/roundcubemail';
   $config['db_dsnr'] = '';
-  $config['imap_host'] = 'tls://mailproxy:9993:9993';
-  $config['smtp_host'] = 'tls://mailproxy:9465:9465';
+  $config['imap_host'] = 'tls://dovecot:143:143';
+  $config['smtp_host'] = 'ssl://smtp.hostinger.com:465';
   $config['username_domain'] = '';
   $config['temp_dir'] = '/tmp/roundcube-temp';
   $config['skin'] = 'elastic';
